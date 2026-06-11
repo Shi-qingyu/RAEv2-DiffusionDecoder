@@ -1,0 +1,7 @@
+*.pyc
+*.pt
+ALAN_LOG.md
+.vscode*
+
+work_dirs
+imagenet
