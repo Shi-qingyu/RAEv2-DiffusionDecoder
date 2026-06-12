@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import cv2
+from torchvision.utils import make_grid, save_image
 
 import util.misc as misc
 import util.lr_sched as lr_sched
@@ -15,11 +16,93 @@ import copy
 import random
 
 
+RAEJIT_GENERATION_SAMPLE_MODES = {
+    "eval_shifted",
+    "dino_first_shifted_aligned",
+    "shifted_independent_uniform",
+    "dino_first_cascaded",
+    "dino_first_cascaded_noised",
+}
+
+
 def concat_all_gather(tensor, gather_dim=0) -> torch.Tensor:
     if torch.distributed.get_world_size() == 1:
         return tensor
     output = torch.distributed.nn.functional.all_gather(tensor)
     return torch.cat(output, dim=gather_dim)
+
+
+def _denormalize_image_batch(images):
+    return (images * 0.5 + 0.5).clamp(0.0, 1.0)
+
+
+def _make_reconstruction_grid(original_images, reconstructed_images):
+    paired_images = torch.stack([original_images, reconstructed_images], dim=1).flatten(0, 1)
+    return make_grid(paired_images.detach().cpu(), nrow=2, padding=2)
+
+
+@torch.no_grad()
+def visualize_raejit_epoch(model_without_ddp, args, epoch, val_loader, device, log_writer=None):
+    if not misc.is_main_process():
+        if misc.is_dist_avail_and_initialized():
+            torch.distributed.barrier()
+        return
+
+    model_was_training = model_without_ddp.training
+    model_without_ddp.eval()
+
+    try:
+        images, labels = next(iter(val_loader))
+        num_vis = min(args.vis_num, images.size(0))
+        images = images[:num_vis].to(device, non_blocking=True).to(torch.float32).div_(255)
+        images = images * 2.0 - 1.0
+        labels = labels[:num_vis].to(device, non_blocking=True)
+
+        rng_devices = [torch.cuda.current_device()] if device.type == "cuda" else []
+        with torch.random.fork_rng(devices=rng_devices):
+            torch.manual_seed(args.seed)
+            if device.type == "cuda":
+                torch.cuda.manual_seed(args.seed)
+
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                reconstructed_images = model_without_ddp.reconstruction(images, labels)
+
+                generated_images = None
+                if args.sample_mode in RAEJIT_GENERATION_SAMPLE_MODES:
+                    generated_labels = torch.linspace(
+                        0, args.class_num - 1, steps=num_vis, device=device
+                    ).long()
+                    if args.label_drop_prob == 1.0:
+                        generated_labels = torch.full_like(generated_labels, args.class_num)
+                    generated_images = model_without_ddp.generate(generated_labels)
+
+        original_images = _denormalize_image_batch(images)
+        reconstructed_images = _denormalize_image_batch(reconstructed_images)
+        reconstruction_grid = _make_reconstruction_grid(original_images, reconstructed_images)
+
+        save_folder = os.path.join(args.output_dir, "visualizations")
+        os.makedirs(save_folder, exist_ok=True)
+        save_image(
+            reconstruction_grid,
+            os.path.join(save_folder, f"epoch_{epoch:04d}_reconstruction.png"),
+        )
+        if log_writer is not None:
+            log_writer.add_image("visual/reconstruction", reconstruction_grid, epoch)
+
+        if generated_images is not None:
+            generated_images = _denormalize_image_batch(generated_images)
+            generation_grid = make_grid(generated_images.detach().cpu(), nrow=min(num_vis, 4), padding=2)
+            save_image(
+                generation_grid,
+                os.path.join(save_folder, f"epoch_{epoch:04d}_generation.png"),
+            )
+            if log_writer is not None:
+                log_writer.add_image("visual/generation", generation_grid, epoch)
+    finally:
+        if model_was_training:
+            model_without_ddp.train()
+        if misc.is_dist_avail_and_initialized():
+            torch.distributed.barrier()
 
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
@@ -100,6 +183,7 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
         os.makedirs(save_folder)
 
     # switch to ema params, hard-coded to be the first one
+    model_state_dict = None
     if args.generation_ema != 'none':
         model_state_dict = copy.deepcopy(model_without_ddp.state_dict())
         ema_state_dict = copy.deepcopy(model_without_ddp.state_dict())
@@ -150,8 +234,9 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
     torch.distributed.barrier()
 
     # back to no ema
-    print("Switch back from ema")
-    model_without_ddp.load_state_dict(model_state_dict)
+    if model_state_dict is not None:
+        print("Switch back from ema")
+        model_without_ddp.load_state_dict(model_state_dict)
 
     # compute FID and IS
     if log_writer is not None:
@@ -212,6 +297,7 @@ def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, device, 
         os.makedirs(save_folder)
 
     # switch to ema params, hard-coded to be the first one
+    model_state_dict = None
     if args.generation_ema != 'none':
         model_state_dict = copy.deepcopy(model_without_ddp.state_dict())
         ema_state_dict = copy.deepcopy(model_without_ddp.state_dict())
@@ -259,10 +345,11 @@ def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, device, 
     torch.distributed.barrier()
 
     # back to no ema
-    print("Switch back from ema")
-    model_without_ddp.load_state_dict(model_state_dict)
+    if model_state_dict is not None:
+        print("Switch back from ema")
+        model_without_ddp.load_state_dict(model_state_dict)
 
-    psnr_values_local_tensor = torch.tensor(psnr_values_local, device=model_without_ddp.device, dtype=torch.float32)
+    psnr_values_local_tensor = torch.tensor(psnr_values_local, device=device, dtype=torch.float32)
     psnr_gathered_tensor = concat_all_gather(psnr_values_local_tensor, gather_dim=0)
     
     if misc.is_main_process():

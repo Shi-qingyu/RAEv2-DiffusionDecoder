@@ -16,7 +16,7 @@ from util.crop import center_crop_arr
 import util.misc as misc
 
 import copy
-from engine_jit import train_one_epoch, evaluate, evaluate_reconstruction
+from engine_jit import train_one_epoch, evaluate, evaluate_reconstruction, visualize_raejit_epoch
 
 from denoiser import Denoiser
 from denoiser_cot import DenoiserCoT
@@ -112,6 +112,10 @@ def get_args_parser():
     parser.add_argument('--keep_images', action='store_true')
     parser.add_argument('--gen_bsz', type=int, default=256,
                         help='Generation batch size')
+    parser.add_argument('--vis_num', type=int, default=8,
+                        help='Number of images to visualize per epoch for RAEJiT')
+    parser.add_argument('--vis_freq', type=int, default=1,
+                        help='Frequency (in epochs) for RAEJiT visualization; set <= 0 to disable')
     parser.add_argument('--autoguidance_ckpt', default='', type=str)
     parser.add_argument('--autoguidance_ema', default='1', type=str) # 'none', '1', '2'
     parser.add_argument('--generation_ema', default='1', type=str) # 'none', '1', '2'
@@ -314,6 +318,9 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         sampler_train.set_epoch(epoch)
         train_one_epoch(model, model_without_ddp, data_loader_train, optimizer, device, epoch, log_writer=log_writer, args=args)
+
+        if "RAEJiT" in args.model and args.vis_freq > 0 and args.vis_num > 0 and epoch % args.vis_freq == 0:
+            visualize_raejit_epoch(model_without_ddp, args, epoch, data_loader_val, device, log_writer=log_writer)
 
         # Save checkpoint periodically
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
