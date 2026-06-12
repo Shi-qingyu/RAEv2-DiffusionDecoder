@@ -21,6 +21,7 @@ from engine_jit import train_one_epoch, evaluate
 from denoiser import Denoiser
 from denoiser_cot import DenoiserCoT
 from denoiser_repa import DenoiserRepa
+from denoiser_raejit import DenoiserRAEJiT
 
 
 def get_args_parser():
@@ -215,6 +216,8 @@ def main(args):
         model = DenoiserCoT(args)
     elif "Repa" in args.model:
         model = DenoiserRepa(args)
+    elif "RAE" in args.model:
+         model = DenoiserRAEJiT(args)
     else:
         model = Denoiser(args)
 

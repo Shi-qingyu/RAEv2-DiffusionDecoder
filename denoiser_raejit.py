@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from model_cot import JiTCoT_models
-from dinov3_hf import DINOv3_HF_MODEL_IDS, DINOv3HFMultiLayerSimpleAddEncoder
+from model_raejit import RAEJiT_models
+from dinov3_hf import DINOv3HFMultiLayerSimpleAddEncoder
 
 
 class DenoiserRAEJiT(nn.Module):
@@ -22,27 +22,14 @@ class DenoiserRAEJiT(nn.Module):
         self.t_eps_inference = args.t_eps_inference
         self.noise_scale = args.noise_scale
 
-        latent_model = args.latent_model
-        latent_base = latent_model.split("[", 1)[0]
-        if latent_model in {"dino", "dinov3"}:
-            dinov3_path = None
-            model_config = "b16"
-        elif latent_base in DINOv3_HF_MODEL_IDS:
-            dinov3_path = None
-            model_config = latent_model
-        else:
-            dinov3_path = latent_model
-            model_config = latent_model
-
         self.encoder = DINOv3HFMultiLayerSimpleAddEncoder(
-            dinov3_path=dinov3_path,
-            model_config=model_config,
-            resolution=args.img_size,
+            dinov3_path=args.latent_model,
+            dino_resolution=args.img_size,
         )
         self.dino_hidden_dim = self.encoder.hidden_size
         self.dino_latent_size = args.img_size // getattr(self.encoder, "patch_size", 16)
 
-        self.net = JiTCoT_models[args.model](
+        self.net = RAEJiT_models[args.model](
             input_size=args.img_size,
             in_channels=3,
             num_classes=args.class_num,
@@ -82,7 +69,7 @@ class DenoiserRAEJiT(nn.Module):
 
         self.ag_net = None
         if args.autoguidance_ckpt != "":
-            self.ag_net = JiTCoT_models['JiTCoT-S/16'](
+            self.ag_net = RAEJiT_models['RAEJiT-S/16'](
                 input_size=args.img_size,
                 in_channels=3,
                 num_classes=args.class_num,
