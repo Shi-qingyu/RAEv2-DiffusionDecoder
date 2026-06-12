@@ -1,4 +1,4 @@
-OUTPUT_DIR=work_dirs/jitrepa_b_16
+OUTPUT_DIR=work_dirs/raejit_b_16
 DATA_PATH=./imagenet
 
 torchrun --nproc_per_node=8 --standalone \

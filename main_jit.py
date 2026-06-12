@@ -338,9 +338,9 @@ def main(args):
             torch.cuda.empty_cache()
             with torch.no_grad():
                 if args.sample_mode == "pixel_only":
-                    evaluate_reconstruction(model_without_ddp, args, epoch, data_loader_val, log_writer=log_writer)
+                    evaluate_reconstruction(model_without_ddp, args, epoch, data_loader_val, device, log_writer=log_writer)
                 elif "RAE" in args.model and (args.sample_mode != "pixel_only"):
-                    evaluate_reconstruction(model_without_ddp, args, epoch, data_loader_val, log_writer=log_writer)
+                    evaluate_reconstruction(model_without_ddp, args, epoch, data_loader_val, device, log_writer=log_writer)
                     evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
                 else:
                     evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)

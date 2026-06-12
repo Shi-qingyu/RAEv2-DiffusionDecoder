@@ -192,7 +192,7 @@ def compute_psnr_torch_batch(original, recon, data_range: float = 1.0):
     return psnr_per_sample
 
 
-def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, log_writer=None):
+def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, device, log_writer=None):
 
     model_without_ddp.eval()
     world_size = misc.get_world_size()
@@ -231,9 +231,9 @@ def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, log_writ
         print("Generation step {}/{}".format(i, len(val_loader)))
 
         x, labels = batch
-        x = x.to(model_without_ddp.device, non_blocking=True).to(torch.float32).div_(255)
+        x = x.to(device, non_blocking=True).to(torch.float32).div_(255)
         x = x * 2.0 - 1.0
-        labels = labels.to(model_without_ddp.device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             reconstructed_images = model_without_ddp.reconstruction(x, labels)
