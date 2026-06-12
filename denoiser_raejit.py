@@ -104,7 +104,7 @@ class DenoiserRAEJiT(nn.Module):
             return t, loss_weight
         elif self.sample_mode == "pixel_only":
             t_pixel = torch.sigmoid(torch.randn(n, device=device) * self.P_std + self.P_mean)
-            t_dino = torch.zeros(n, device=device)
+            t_dino = torch.ones(n, device=device)
 
             t = [t_pixel.to(dtype), t_dino.to(dtype)]
             loss_weight = [torch.ones(n, device=device, dtype=dtype), torch.zeros(n, device=device, dtype=dtype)]

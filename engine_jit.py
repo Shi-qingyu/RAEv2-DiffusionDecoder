@@ -14,6 +14,12 @@ import copy
 import random
 
 
+def concat_all_gather(tensor, gather_dim=0) -> torch.Tensor:
+    if torch.distributed.get_world_size() == 1:
+        return tensor
+    output = torch.distributed.nn.functional.all_gather(tensor)
+    return torch.cat(output, dim=gather_dim)
+
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -83,7 +89,7 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
     # Construct the folder name for saving generated images.
     save_folder = os.path.join(
         args.output_dir,
-        "{}-steps{}-cfg{}-interval{}-{}-image{}-res{}".format(
+        "gen-{}-steps{}-cfg{}-interval{}-{}-image{}-res{}".format(
             model_without_ddp.method, model_without_ddp.steps, model_without_ddp.cfg_scale,
             model_without_ddp.cfg_interval[0], model_without_ddp.cfg_interval[1], num_images, args.img_size
         )
@@ -152,6 +158,123 @@ def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
             fid_statistics_file = 'fid_stats/jit_in256_stats.npz'
         elif args.img_size == 512:
             fid_statistics_file = 'fid_stats/jit_in512_stats.npz'
+        else:
+            raise NotImplementedError
+        metrics_dict = torch_fidelity.calculate_metrics(
+            input1=save_folder,
+            input2=None,
+            fid_statistics_file=fid_statistics_file,
+            cuda=True,
+            isc=True,
+            fid=True,
+            kid=False,
+            prc=False,
+            verbose=False,
+        )
+        fid = metrics_dict['frechet_inception_distance']
+        inception_score = metrics_dict['inception_score_mean']
+        postfix = "_cfg{}_res{}".format(model_without_ddp.cfg_scale, args.img_size)
+        log_writer.add_scalar('fid{}'.format(postfix), fid, epoch)
+        log_writer.add_scalar('is{}'.format(postfix), inception_score, epoch)
+        print("FID: {:.4f}, Inception Score: {:.4f}".format(fid, inception_score))
+        if not args.keep_images:
+            shutil.rmtree(save_folder)
+
+    torch.distributed.barrier()
+
+
+@torch.inference_mode()
+def compute_psnr_torch_batch(original, recon, data_range: float = 1.0):
+    """computes psnr for a batch of images using pytorch operations."""
+    mse_per_sample = F.mse_loss(original, recon, reduction="none").mean(dim=[1, 2, 3])
+    psnr_per_sample = 10.0 * torch.log10(data_range**2 / mse_per_sample)
+    return psnr_per_sample
+
+
+def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, log_writer=None):
+
+    model_without_ddp.eval()
+    world_size = misc.get_world_size()
+    local_rank = misc.get_rank()
+    num_images = 1000 if epoch == 0 else args.num_images 
+
+    # Construct the folder name for saving generated images.
+    save_folder = os.path.join(
+        args.output_dir,
+        "rec-{}-steps{}-cfg{}-interval{}-{}-image{}-res{}".format(
+            model_without_ddp.method, model_without_ddp.steps, model_without_ddp.cfg_scale,
+            model_without_ddp.cfg_interval[0], model_without_ddp.cfg_interval[1], num_images, args.img_size
+        )
+    )
+    print("Save to:", save_folder)
+    if misc.get_rank() == 0 and not os.path.exists(save_folder):
+        os.makedirs(save_folder)
+
+    # switch to ema params, hard-coded to be the first one
+    if args.generation_ema != 'none':
+        model_state_dict = copy.deepcopy(model_without_ddp.state_dict())
+        ema_state_dict = copy.deepcopy(model_without_ddp.state_dict())
+        for i, (name, _value) in enumerate(model_without_ddp.named_parameters()):
+            assert name in ema_state_dict
+            maybe_ema_state_dict = {
+                '1': model_without_ddp.ema_params1,
+                '2': model_without_ddp.ema_params2,
+            }[args.generation_ema]
+            ema_state_dict[name] = maybe_ema_state_dict[i]
+        print("Switch to ema")
+        model_without_ddp.load_state_dict(ema_state_dict)
+
+    psnr_values_local = []
+
+    for i, batch in enumerate(val_loader):
+        print("Generation step {}/{}".format(i, len(val_loader)))
+
+        x, labels = batch
+        x = x.to(model_without_ddp.device, non_blocking=True).to(torch.float32).div_(255)
+        x = x * 2.0 - 1.0
+        labels = labels.to(model_without_ddp.device, non_blocking=True)
+
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            reconstructed_images = model_without_ddp.reconstruction(x, labels)
+
+        torch.distributed.barrier()
+
+        # denormalize images
+        reconstructed_images = (reconstructed_images + 1) / 2
+        cur_psnr = compute_psnr_torch_batch(x * 0.5 + 0.5, reconstructed_images, data_range=1.0)
+        psnr_values_local.extend(cur_psnr.cpu().tolist())
+        reconstructed_images = reconstructed_images.detach().cpu()
+
+
+        # distributed save images
+        for b_id in range(reconstructed_images.size(0)):
+            img_id = i * reconstructed_images.size(0) * world_size + local_rank * reconstructed_images.size(0) + b_id
+            if img_id >= num_images:
+                break
+            gen_img = np.round(np.clip(reconstructed_images[b_id].numpy().transpose([1, 2, 0]) * 255, 0, 255))
+            gen_img = gen_img.astype(np.uint8)[:, :, ::-1]
+            cv2.imwrite(os.path.join(save_folder, '{}.png'.format(str(img_id).zfill(5))), gen_img)
+
+    torch.distributed.barrier()
+
+    # back to no ema
+    print("Switch back from ema")
+    model_without_ddp.load_state_dict(model_state_dict)
+
+    psnr_values_local_tensor = torch.tensor(psnr_values_local, device=model_without_ddp.device, dtype=torch.float32)
+    psnr_gathered_tensor = concat_all_gather(psnr_values_local_tensor, gather_dim=0)
+    
+    if global_rank == 0:
+        # psnr_gathered_tensor now contains the concatenated PSNR values from all ranks
+        mean_psnr = psnr_gathered_tensor.mean().item()
+        print(f"Average PSNR (all ranks): {mean_psnr:.4f}")
+    else:
+        mean_psnr = 0.0
+
+    # compute FID and IS
+    if log_writer is not None:
+        if args.img_size == 256:
+            fid_statistics_file = 'fid_stats/val_fid_statistics_file_256.npz'
         else:
             raise NotImplementedError
         metrics_dict = torch_fidelity.calculate_metrics(

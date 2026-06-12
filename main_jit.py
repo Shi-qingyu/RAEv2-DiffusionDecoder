@@ -16,7 +16,7 @@ from util.crop import center_crop_arr
 import util.misc as misc
 
 import copy
-from engine_jit import train_one_epoch, evaluate
+from engine_jit import train_one_epoch, evaluate, evaluate_reconstruction
 
 from denoiser import Denoiser
 from denoiser_cot import DenoiserCoT
@@ -184,6 +184,8 @@ def main(args):
     train_root = os.path.join(args.data_path, 'train')
     dataset_train = datasets.ImageFolder(train_root, transform=transform_train)
     args.dataset_size = len(dataset_train)
+    val_root = os.path.join(args.data_path, 'val')
+    dataset_val = datasets.ImageFolder(val_root, transform=transform_train)
 
     sampler_train = DistributedSampler(
         dataset_train,
@@ -192,7 +194,14 @@ def main(args):
         shuffle=True,
     )
 
-    data_loader_kwargs = dict(
+    sampler_val = DistributedSampler(
+        dataset_val,
+        num_replicas=num_tasks,
+        rank=global_rank,
+        shuffle=False,
+    )
+
+    train_data_loader_kwargs = dict(
         dataset=dataset_train,
         sampler=sampler_train,
         batch_size=args.batch_size,
@@ -200,13 +209,26 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=True,
     )
+    
+    val_data_loader_kwargs = dict(
+        dataset=dataset_val,
+        sampler=sampler_val,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=True,
+    )
+    
     if args.num_workers > 0:
-        data_loader_kwargs["prefetch_factor"] = args.prefetch_factor
+        train_data_loader_kwargs["prefetch_factor"] = args.prefetch_factor
+        val_data_loader_kwargs["prefetch_factor"] = args.prefetch_factor
 
-    data_loader_train = DataLoader(**data_loader_kwargs)
+    data_loader_train = DataLoader(**train_data_loader_kwargs)
+    data_loader_val = DataLoader(**val_data_loader_kwargs)
 
     print(f"ImageFolder loaded from {train_root}")
-    print(f"Dataset size: {len(dataset_train)} images across {len(dataset_train.classes)} classes")
+    print(f"Training dataset size: {len(dataset_train)} images across {len(dataset_train.classes)} classes")
+    print(f"Validation dataset size: {len(dataset_val)} images across {len(dataset_val.classes)} classes")
 
     torch._dynamo.config.cache_size_limit = 128
     torch._dynamo.config.optimize_ddp = False
@@ -217,7 +239,7 @@ def main(args):
     elif "Repa" in args.model:
         model = DenoiserRepa(args)
     elif "RAE" in args.model:
-         model = DenoiserRAEJiT(args)
+        model = DenoiserRAEJiT(args)
     else:
         model = Denoiser(args)
 
@@ -309,7 +331,13 @@ def main(args):
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
             with torch.no_grad():
-                evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                if args.sample_mode == "pixel_only":
+                    evaluate_reconstruction(model_without_ddp, args, epoch, data_loader_val, log_writer=log_writer)
+                elif "RAE" in args.model and (args.sample_mode != "pixel_only"):
+                    evaluate_reconstruction(model_without_ddp, args, epoch, data_loader_val, log_writer=log_writer)
+                    evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
+                else:
+                    evaluate(model_without_ddp, args, epoch, batch_size=args.gen_bsz, log_writer=log_writer)
             torch.cuda.empty_cache()
 
         if misc.is_main_process() and log_writer is not None:
