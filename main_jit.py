@@ -76,6 +76,7 @@ def get_args_parser():
 
     # dino
     parser.add_argument('--latent_model', default='dino', type=str)  # dino, mocov3
+    parser.add_argument('--layer_indices', default=[11, 13, 15, 17, 19, 21, 23], nargs='+', type=int)
     parser.add_argument('--dino_max_t', default=1.0, type=float)
     parser.add_argument('--dino_weight', default=1.0, type=float)
     parser.add_argument('--sample_mode', default='default', type=str)  # dino_first, 
@@ -179,13 +180,18 @@ def main(args):
         transforms.RandomHorizontalFlip(),
         transforms.PILToTensor()
     ])
+    
+    transform_val = transforms.Compose([
+        transforms.Lambda(lambda img: center_crop_arr(img, args.img_size)),
+        transforms.PILToTensor()
+    ])
 
     # ImageFolder pipeline. Expects: args.data_path/train/<class_name>/*.JPEG
     train_root = os.path.join(args.data_path, 'train')
     dataset_train = datasets.ImageFolder(train_root, transform=transform_train)
     args.dataset_size = len(dataset_train)
     val_root = os.path.join(args.data_path, 'val')
-    dataset_val = datasets.ImageFolder(val_root, transform=transform_train)
+    dataset_val = datasets.ImageFolder(val_root, transform=transform_val)
 
     sampler_train = DistributedSampler(
         dataset_train,
@@ -216,7 +222,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
-        drop_last=True,
+        drop_last=False,
     )
     
     if args.num_workers > 0:

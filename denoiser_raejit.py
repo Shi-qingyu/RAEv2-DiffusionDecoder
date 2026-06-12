@@ -25,6 +25,7 @@ class DenoiserRAEJiT(nn.Module):
         self.encoder = DINOv3HFMultiLayerSimpleAddEncoder(
             dinov3_path=args.latent_model,
             dino_resolution=args.img_size,
+            layer_indices=args.layer_indices,
         )
         self.dino_hidden_dim = self.encoder.hidden_size
         self.dino_latent_size = args.img_size // getattr(self.encoder, "patch_size", 16)
@@ -211,7 +212,7 @@ class DenoiserRAEJiT(nn.Module):
     @torch.no_grad()
     def _encode_dino(self, images):
         self.encoder.eval()
-        return self.encoder.forward_features(images, return_dict=False, reshape_to_2d=True)
+        return self.encoder.forward_features(images)
 
     def forward(self, x, labels):
         # x: [-1,1] min,max; Image-shape N 3 H W

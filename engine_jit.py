@@ -4,6 +4,7 @@ import os
 import shutil
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 
@@ -264,7 +265,7 @@ def evaluate_reconstruction(model_without_ddp, args, epoch, val_loader, log_writ
     psnr_values_local_tensor = torch.tensor(psnr_values_local, device=model_without_ddp.device, dtype=torch.float32)
     psnr_gathered_tensor = concat_all_gather(psnr_values_local_tensor, gather_dim=0)
     
-    if global_rank == 0:
+    if misc.is_main_process():
         # psnr_gathered_tensor now contains the concatenated PSNR values from all ranks
         mean_psnr = psnr_gathered_tensor.mean().item()
         print(f"Average PSNR (all ranks): {mean_psnr:.4f}")

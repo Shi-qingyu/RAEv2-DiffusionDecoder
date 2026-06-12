@@ -136,17 +136,18 @@ class DINOv3HFMultiLayerSimpleAddEncoder(DINOv3HFEncoder):
     4. add the mean patch token from the final selected layer
     """
 
-    DEFAULT_LAYERS = {
-        "l16": [11, 13, 15, 17, 19, 21, 23],
-    }
+    DEFAULT_LAYERS = [11, 13, 15, 17, 19, 21, 23]
 
     def __init__(
         self,
         dinov3_path: Optional[str],
-        layer_indices: Optional[Sequence[int]],
+        layer_indices: Optional[Sequence[int]]=None,
         **kwargs,
     ):
         super().__init__(dinov3_path=dinov3_path, **kwargs)
+        if layer_indices is None:
+            # default to the same layers used in model_raev2.py for ViT-L/16
+            layer_indices = self.DEFAULT_LAYERS
         self.layer_indices = [int(idx) for idx in layer_indices]
 
     def _forward_features_from_pixel_values(

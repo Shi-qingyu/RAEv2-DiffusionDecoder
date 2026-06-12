@@ -4,6 +4,7 @@ DATA_PATH=./imagenet
 torchrun --nproc_per_node=8 --standalone \
 main_jit.py \
 --model RAEJiT-BM/16 \
+--latent_model offline_models/dinov3_vit_large_patch16 \
 --D_mean -1.2 --D_std 1.0 \
 --P_mean -0.4 --P_std 0.8 \
 --batch_size 128 --blr 5e-5 \
