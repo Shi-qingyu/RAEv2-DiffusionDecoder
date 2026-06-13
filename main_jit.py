@@ -112,6 +112,8 @@ def get_args_parser():
     parser.add_argument('--keep_images', action='store_true')
     parser.add_argument('--gen_bsz', type=int, default=256,
                         help='Generation batch size')
+    parser.add_argument('--rec_bsz', type=int, default=256,
+                        help='Reconstruction batch size')
     parser.add_argument('--vis_num', type=int, default=8,
                         help='Number of images to visualize per epoch for RAEJiT')
     parser.add_argument('--vis_freq', type=int, default=1,
@@ -225,7 +227,7 @@ def main(args):
     val_data_loader_kwargs = dict(
         dataset=dataset_val,
         sampler=sampler_val,
-        batch_size=args.batch_size,
+        batch_size=args.rec_bsz,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=False,
