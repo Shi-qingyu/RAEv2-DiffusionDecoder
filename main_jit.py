@@ -150,6 +150,8 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='URL used to set up distributed training')
+    parser.add_argument('--dist_timeout_minutes', default=60, type=int,
+                        help='Timeout in minutes for distributed collectives')
 
     return parser
 

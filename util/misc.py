@@ -229,10 +229,12 @@ def init_distributed_mode(args):
 
     torch.cuda.set_device(args.gpu)
     args.dist_backend = 'nccl'
-    print('| distributed init (rank {}): {}, gpu {}'.format(
-        args.rank, args.dist_url, args.gpu), flush=True)
+    dist_timeout = datetime.timedelta(minutes=getattr(args, 'dist_timeout_minutes', 60))
+    print('| distributed init (rank {}): {}, gpu {}, timeout {}'.format(
+        args.rank, args.dist_url, args.gpu, dist_timeout), flush=True)
     torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                         world_size=args.world_size, rank=args.rank)
+                                         world_size=args.world_size, rank=args.rank,
+                                         timeout=dist_timeout)
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
 
